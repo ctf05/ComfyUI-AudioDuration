@@ -41,6 +41,9 @@ class SimpleAudioOverlay:
             "required": {
                 "audio1": ("AUDIO",),
                 "audio2": ("AUDIO",),
+                "blend_mode": (["add", "average", "mix"], {
+                    "default": "add"
+                }),
                 "mix_ratio": ("FLOAT", {
                     "default": 0.5,
                     "min": 0.0,
@@ -56,7 +59,7 @@ class SimpleAudioOverlay:
     FUNCTION = "overlay_audio"
     CATEGORY = "audio/mixing"
     
-    def overlay_audio(self, audio1, audio2, mix_ratio):
+    def overlay_audio(self, audio1, audio2, blend_mode, mix_ratio):
         """Mix two audio tracks together"""
         waveform1 = audio1["waveform"]
         waveform2 = audio2["waveform"]
@@ -89,11 +92,21 @@ class SimpleAudioOverlay:
             padding = max_length - waveform2.shape[-1]
             waveform2 = torch.nn.functional.pad(waveform2, (0, padding))
         
-        # Mix the audio tracks
-        # mix_ratio of 0.5 means equal mix
-        # mix_ratio of 0.0 means only audio2
-        # mix_ratio of 1.0 means only audio1
-        mixed_waveform = (waveform1 * mix_ratio) + (waveform2 * (1.0 - mix_ratio))
+        # Mix based on blend mode
+        if blend_mode == "add":
+            # Simple addition - sounds like both playing at once
+            mixed_waveform = waveform1 + waveform2
+            
+        elif blend_mode == "average":
+            # Average - each at 50% volume
+            mixed_waveform = (waveform1 + waveform2) / 2.0
+            
+        elif blend_mode == "mix":
+            # Custom mix based on ratio
+            # mix_ratio of 0.5 means equal mix
+            # mix_ratio of 0.0 means only audio2
+            # mix_ratio of 1.0 means only audio1
+            mixed_waveform = (waveform1 * mix_ratio) + (waveform2 * (1.0 - mix_ratio))
         
         # Prevent clipping by normalizing if necessary
         max_val = torch.abs(mixed_waveform).max()
