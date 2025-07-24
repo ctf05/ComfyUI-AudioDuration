@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import torch.nn.functional as F
 
 class SimpleAudioDuration:
     """
@@ -29,10 +30,10 @@ class SimpleAudioDuration:
         
         return (duration,)
 
-
 class SimpleAudioOverlay:
     """
     Overlay two audio tracks starting from the beginning (mix them together)
+    Supports different sample rates by resampling
     """
     
     @classmethod
@@ -51,6 +52,9 @@ class SimpleAudioOverlay:
                     "step": 0.01,
                     "display": "slider"
                 }),
+                "target_sample_rate": (["auto", "audio1", "audio2", "higher", "lower"], {
+                    "default": "higher"
+                }),
             }
         }
     
@@ -59,16 +63,53 @@ class SimpleAudioOverlay:
     FUNCTION = "overlay_audio"
     CATEGORY = "audio/mixing"
     
-    def overlay_audio(self, audio1, audio2, blend_mode, mix_ratio):
-        """Mix two audio tracks together"""
+    def resample_audio(self, waveform, orig_sr, target_sr):
+        """Resample audio to target sample rate"""
+        if orig_sr == target_sr:
+            return waveform
+        
+        # Calculate new length
+        duration = waveform.shape[-1] / orig_sr
+        new_length = int(duration * target_sr)
+        
+        # Use linear interpolation for resampling
+        # This works for both mono and stereo
+        if waveform.dim() == 1:
+            waveform = waveform.unsqueeze(0)
+        
+        # Resample each channel
+        resampled = F.interpolate(
+            waveform.unsqueeze(0),  # Add batch dimension
+            size=new_length,
+            mode='linear',
+            align_corners=False
+        ).squeeze(0)  # Remove batch dimension
+        
+        return resampled
+    
+    def overlay_audio(self, audio1, audio2, blend_mode, mix_ratio, target_sample_rate):
+        """Mix two audio tracks together with sample rate conversion"""
         waveform1 = audio1["waveform"]
         waveform2 = audio2["waveform"]
         sample_rate1 = audio1["sample_rate"]
         sample_rate2 = audio2["sample_rate"]
         
-        # Ensure sample rates match
-        if sample_rate1 != sample_rate2:
-            raise ValueError(f"Sample rates must match. Audio1: {sample_rate1}Hz, Audio2: {sample_rate2}Hz")
+        # Determine target sample rate
+        if target_sample_rate == "auto" or target_sample_rate == "higher":
+            final_sample_rate = max(sample_rate1, sample_rate2)
+        elif target_sample_rate == "lower":
+            final_sample_rate = min(sample_rate1, sample_rate2)
+        elif target_sample_rate == "audio1":
+            final_sample_rate = sample_rate1
+        elif target_sample_rate == "audio2":
+            final_sample_rate = sample_rate2
+        
+        # Resample if necessary
+        if sample_rate1 != final_sample_rate:
+            waveform1 = self.resample_audio(waveform1, sample_rate1, final_sample_rate)
+        
+        if sample_rate2 != final_sample_rate:
+            waveform2 = self.resample_audio(waveform2, sample_rate2, final_sample_rate)
         
         # Get the length of the longer audio
         max_length = max(waveform1.shape[-1], waveform2.shape[-1])
@@ -86,11 +127,11 @@ class SimpleAudioOverlay:
         # Pad shorter audio with zeros to match the longer one
         if waveform1.shape[-1] < max_length:
             padding = max_length - waveform1.shape[-1]
-            waveform1 = torch.nn.functional.pad(waveform1, (0, padding))
+            waveform1 = F.pad(waveform1, (0, padding))
         
         if waveform2.shape[-1] < max_length:
             padding = max_length - waveform2.shape[-1]
-            waveform2 = torch.nn.functional.pad(waveform2, (0, padding))
+            waveform2 = F.pad(waveform2, (0, padding))
         
         # Mix based on blend mode
         if blend_mode == "add":
@@ -115,9 +156,8 @@ class SimpleAudioOverlay:
         
         return ({
             "waveform": mixed_waveform,
-            "sample_rate": sample_rate1
+            "sample_rate": final_sample_rate
         },)
-
 
 # Node class mappings
 NODE_CLASS_MAPPINGS = {
