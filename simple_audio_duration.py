@@ -72,20 +72,37 @@ class SimpleAudioOverlay:
         duration = waveform.shape[-1] / orig_sr
         new_length = int(duration * target_sr)
         
-        # Use linear interpolation for resampling
-        # This works for both mono and stereo
-        if waveform.dim() == 1:
-            waveform = waveform.unsqueeze(0)
+        # Handle different input shapes
+        original_shape = waveform.shape
         
-        # Resample each channel
+        # If waveform already has batch dimension (3D), use it as is
+        if waveform.dim() == 3:
+            # Shape is [batch, channels, samples]
+            batch_waveform = waveform
+        elif waveform.dim() == 2:
+            # Shape is [channels, samples], add batch dimension
+            batch_waveform = waveform.unsqueeze(0)
+        elif waveform.dim() == 1:
+            # Shape is [samples], add batch and channel dimensions
+            batch_waveform = waveform.unsqueeze(0).unsqueeze(0)
+        else:
+            raise ValueError(f"Unexpected waveform dimensions: {waveform.dim()}")
+        
+        # Resample
         resampled = F.interpolate(
-            waveform.unsqueeze(0),  # Add batch dimension
+            batch_waveform,
             size=new_length,
             mode='linear',
             align_corners=False
-        ).squeeze(0)  # Remove batch dimension
+        )
         
-        return resampled
+        # Return to original shape format
+        if waveform.dim() == 3:
+            return resampled
+        elif waveform.dim() == 2:
+            return resampled.squeeze(0)
+        else:  # dim == 1
+            return resampled.squeeze(0).squeeze(0)
     
     def overlay_audio(self, audio1, audio2, blend_mode, mix_ratio, target_sample_rate):
         """Mix two audio tracks together with sample rate conversion"""
@@ -114,15 +131,42 @@ class SimpleAudioOverlay:
         # Get the length of the longer audio
         max_length = max(waveform1.shape[-1], waveform2.shape[-1])
         
+        # Handle batch dimensions if present
+        has_batch1 = waveform1.dim() == 3
+        has_batch2 = waveform2.dim() == 3
+        
+        # Remove batch dimension for processing if present
+        if has_batch1:
+            waveform1 = waveform1.squeeze(0)
+        if has_batch2:
+            waveform2 = waveform2.squeeze(0)
+        
+        # Now waveforms should be 2D [channels, samples] or 1D [samples]
+        # Get the actual channel count
+        channels1 = waveform1.shape[0] if waveform1.dim() == 2 else 1
+        channels2 = waveform2.shape[0] if waveform2.dim() == 2 else 1
+        
         # Ensure both waveforms have the same number of channels
-        if waveform1.shape[0] != waveform2.shape[0]:
+        if channels1 != channels2:
             # Convert mono to stereo if needed
-            if waveform1.shape[0] == 1 and waveform2.shape[0] == 2:
-                waveform1 = waveform1.repeat(2, 1)
-            elif waveform1.shape[0] == 2 and waveform2.shape[0] == 1:
-                waveform2 = waveform2.repeat(2, 1)
+            if channels1 == 1 and channels2 == 2:
+                if waveform1.dim() == 1:
+                    waveform1 = waveform1.unsqueeze(0).repeat(2, 1)
+                else:
+                    waveform1 = waveform1.repeat(2, 1)
+            elif channels1 == 2 and channels2 == 1:
+                if waveform2.dim() == 1:
+                    waveform2 = waveform2.unsqueeze(0).repeat(2, 1)
+                else:
+                    waveform2 = waveform2.repeat(2, 1)
             else:
-                raise ValueError(f"Incompatible channel counts: {waveform1.shape[0]} and {waveform2.shape[0]}")
+                raise ValueError(f"Incompatible channel counts: {channels1} and {channels2}")
+        
+        # Ensure both are 2D now
+        if waveform1.dim() == 1:
+            waveform1 = waveform1.unsqueeze(0)
+        if waveform2.dim() == 1:
+            waveform2 = waveform2.unsqueeze(0)
         
         # Pad shorter audio with zeros to match the longer one
         if waveform1.shape[-1] < max_length:
@@ -153,6 +197,10 @@ class SimpleAudioOverlay:
         max_val = torch.abs(mixed_waveform).max()
         if max_val > 1.0:
             mixed_waveform = mixed_waveform / max_val
+        
+        # Add batch dimension back if either input had it
+        if has_batch1 or has_batch2:
+            mixed_waveform = mixed_waveform.unsqueeze(0)
         
         return ({
             "waveform": mixed_waveform,
